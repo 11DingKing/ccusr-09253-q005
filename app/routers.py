@@ -2,25 +2,55 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from . import services
 from .db import get_db
 from .schemas import (
+    AdjudicateIn,
+    CaseOut,
+    DetectCasesIn,
+    DetectResultOut,
     DiffOut,
     EventBatchIn,
+    EvidenceIn,
     FreezeIn,
     ImportResult,
+    MergeCasesIn,
     PlanIn,
     PlanOut,
+    ReopenIn,
     SnapshotOut,
+    SplitCaseIn,
+    SplitResultOut,
     StudentProgressOut,
 )
 
 router = APIRouter(prefix="/api")
+
+
+def _require_actor(
+    x_actor_id: Annotated[str | None, Header()] = None,
+    x_actor_role: Annotated[str | None, Header()] = None,
+) -> tuple[str, str]:
+    actor_id = (x_actor_id or "").strip()
+    if not actor_id:
+        raise HTTPException(status_code=400, detail="X-Actor-Id header is required")
+    role = (x_actor_role or "reviewer").strip().lower()
+    if role not in {"reviewer", "admin"}:
+        raise HTTPException(
+            status_code=400, detail="X-Actor-Role must be 'reviewer' or 'admin'"
+        )
+    return actor_id, role
+
+
+def _optional_actor(
+    x_actor_id: Annotated[str | None, Header()] = None,
+) -> str:
+    return (x_actor_id or "").strip() or "system"
 
 
 @router.post("/plans", response_model=PlanOut, status_code=status.HTTP_201_CREATED)
@@ -160,3 +190,171 @@ def get_diff(
         )
     except (services.PlanNotFoundError, services.FreezeNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# 异常学时复核案件
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/plans/{plan_version}/cases/detect",
+    response_model=DetectResultOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def detect_cases(
+    plan_version: str,
+    body: DetectCasesIn,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(_optional_actor),
+) -> Any:
+    return services.detect_cases(
+        db,
+        plan_version=plan_version,
+        max_checkin_seconds=body.max_checkin_seconds,
+        rules=body.rules,
+        actor_id=actor_id,
+    )
+
+
+@router.post(
+    "/plans/{plan_version}/cases/merge",
+    response_model=CaseOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def merge_cases(
+    plan_version: str,
+    body: MergeCasesIn,
+    db: Session = Depends(get_db),
+    actor: tuple[str, str] = Depends(_require_actor),
+) -> Any:
+    actor_id, actor_role = actor
+    return services.merge_cases(
+        db,
+        plan_version=plan_version,
+        case_ids=body.case_ids,
+        reason=body.reason,
+        actor_id=actor_id,
+        actor_role=actor_role,
+    )
+
+
+@router.get("/plans/{plan_version}/cases", response_model=list[CaseOut])
+def list_cases(
+    plan_version: str,
+    state: str | None = None,
+    student_id: str | None = None,
+    db: Session = Depends(get_db),
+) -> Any:
+    return services.list_case_dicts(
+        db, plan_version, state=state, student_id=student_id
+    )
+
+
+@router.get("/plans/{plan_version}/cases/{case_id}", response_model=CaseOut)
+def get_case(
+    plan_version: str, case_id: str, db: Session = Depends(get_db)
+) -> Any:
+    return services.get_case_detail(db, plan_version, case_id)
+
+
+@router.post("/plans/{plan_version}/cases/{case_id}/claim", response_model=CaseOut)
+def claim_case(
+    plan_version: str,
+    case_id: str,
+    db: Session = Depends(get_db),
+    actor: tuple[str, str] = Depends(_require_actor),
+) -> Any:
+    actor_id, actor_role = actor
+    return services.claim_case(
+        db,
+        plan_version=plan_version,
+        case_id=case_id,
+        actor_id=actor_id,
+        actor_role=actor_role,
+    )
+
+
+@router.post("/plans/{plan_version}/cases/{case_id}/evidence", response_model=CaseOut)
+def supplement_evidence(
+    plan_version: str,
+    case_id: str,
+    body: EvidenceIn,
+    db: Session = Depends(get_db),
+    actor: tuple[str, str] = Depends(_require_actor),
+) -> Any:
+    actor_id, actor_role = actor
+    return services.supplement_evidence(
+        db,
+        plan_version=plan_version,
+        case_id=case_id,
+        note=body.note,
+        attachments=body.attachments,
+        actor_id=actor_id,
+        actor_role=actor_role,
+    )
+
+
+@router.post("/plans/{plan_version}/cases/{case_id}/adjudicate", response_model=CaseOut)
+def adjudicate_case(
+    plan_version: str,
+    case_id: str,
+    body: AdjudicateIn,
+    db: Session = Depends(get_db),
+    actor: tuple[str, str] = Depends(_require_actor),
+) -> Any:
+    actor_id, actor_role = actor
+    correction = body.correction.model_dump() if body.correction else None
+    return services.adjudicate_case(
+        db,
+        plan_version=plan_version,
+        case_id=case_id,
+        verdict=body.verdict,
+        reason=body.reason,
+        correction=correction,
+        actor_id=actor_id,
+        actor_role=actor_role,
+    )
+
+
+@router.post("/plans/{plan_version}/cases/{case_id}/reopen", response_model=CaseOut)
+def reopen_case(
+    plan_version: str,
+    case_id: str,
+    body: ReopenIn,
+    db: Session = Depends(get_db),
+    actor: tuple[str, str] = Depends(_require_actor),
+) -> Any:
+    actor_id, actor_role = actor
+    return services.reopen_case(
+        db,
+        plan_version=plan_version,
+        case_id=case_id,
+        reason=body.reason,
+        actor_id=actor_id,
+        actor_role=actor_role,
+    )
+
+
+@router.post(
+    "/plans/{plan_version}/cases/{case_id}/split",
+    response_model=SplitResultOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def split_case(
+    plan_version: str,
+    case_id: str,
+    body: SplitCaseIn,
+    db: Session = Depends(get_db),
+    actor: tuple[str, str] = Depends(_require_actor),
+) -> Any:
+    actor_id, actor_role = actor
+    return services.split_case(
+        db,
+        plan_version=plan_version,
+        case_id=case_id,
+        groups=[group.model_dump() for group in body.groups],
+        reason=body.reason,
+        actor_id=actor_id,
+        actor_role=actor_role,
+    )

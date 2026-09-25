@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .compliance.anomaly_cases import DEFAULT_MAX_CHECKIN_SECONDS
+
 
 class PlanIn(BaseModel):
     plan_version: str = Field(..., min_length=1, max_length=128)
@@ -100,6 +102,13 @@ class AdjustmentOut(BaseModel):
     reason: str
 
 
+class HeldAdjustmentOut(BaseModel):
+    event_id: str
+    seconds: int
+    reason: str
+    case_id: str | None = None
+
+
 class StudentProgressOut(BaseModel):
     student_id: str
     confirmed_seconds: int
@@ -112,6 +121,9 @@ class StudentProgressOut(BaseModel):
     daily: list[DailyTotal]
     checkins: list[CheckinExplanation]
     adjustments: list[AdjustmentOut]
+    held_adjustments: list[HeldAdjustmentOut] = []
+    open_cases: list[dict[str, Any]] = []
+    pending_review_seconds: int = 0
 
 
 class SnapshotOut(BaseModel):
@@ -138,3 +150,90 @@ class DiffOut(BaseModel):
     new_event_cutoff_id: str | None
     student_changes: list[dict[str, Any]]
     students_affected: int
+
+
+class DetectCasesIn(BaseModel):
+    max_checkin_seconds: int = Field(DEFAULT_MAX_CHECKIN_SECONDS, gt=0)
+    rules: (
+        list[
+            Literal[
+                "negative_adjustment", "oversized_checkin", "overlapping_activity"
+            ]
+        ]
+        | None
+    ) = None
+
+
+class CaseOut(BaseModel):
+    case_id: str
+    plan_version: str
+    student_id: str
+    rule: str
+    state: str
+    assignee_id: str | None
+    dedup_key: str
+    disputed_seconds: int
+    source_event_ids: list[str]
+    absorbed_event_ids: list[str]
+    resolution_event_id: str | None
+    verdict: str | None
+    evidence: list[dict[str, Any]]
+    audit: list[dict[str, Any]]
+    lineage: dict[str, list[str]]
+    version: int
+    created_at: str | None
+    updated_at: str | None
+
+
+class DetectResultOut(BaseModel):
+    created: list[CaseOut]
+    existing: list[CaseOut]
+    scanned_events: int
+
+
+class EvidenceIn(BaseModel):
+    note: str = Field(..., min_length=1, max_length=2000)
+    attachments: list[str] = Field(default_factory=list, max_length=20)
+
+
+class CorrectionIn(BaseModel):
+    event_id: str = Field(..., min_length=1, max_length=128)
+    adjustment_seconds: int
+    reason: str = ""
+
+    @field_validator("adjustment_seconds")
+    @classmethod
+    def _nonzero(cls, v: int) -> int:
+        if v == 0:
+            raise ValueError("adjustment_seconds must be non-zero")
+        return v
+
+
+class AdjudicateIn(BaseModel):
+    verdict: Literal["confirmed", "dismissed"]
+    reason: str = Field(..., min_length=1, max_length=2000)
+    correction: CorrectionIn | None = None
+
+
+class ReopenIn(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=2000)
+
+
+class MergeCasesIn(BaseModel):
+    case_ids: list[str] = Field(..., min_length=2)
+    reason: str = Field(..., min_length=1, max_length=2000)
+
+
+class SplitGroupIn(BaseModel):
+    source_event_ids: list[str] = Field(..., min_length=1)
+    disputed_seconds: int = Field(..., ge=0)
+
+
+class SplitCaseIn(BaseModel):
+    groups: list[SplitGroupIn] = Field(..., min_length=2)
+    reason: str = Field(..., min_length=1, max_length=2000)
+
+
+class SplitResultOut(BaseModel):
+    parent: CaseOut
+    children: list[CaseOut]

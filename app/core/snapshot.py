@@ -50,7 +50,15 @@ class Snapshot:
         )
 
 
-def _student_to_dict(progress: StudentProgress, tz_name: str) -> dict[str, Any]:
+def _student_to_dict(
+    progress: StudentProgress,
+    tz_name: str,
+    *,
+    open_cases: list[dict[str, Any]] | None = None,
+    held_case_map: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    case_map = held_case_map or {}
+    cases = [dict(case) for case in (open_cases or [])]
     return {
         "student_id": progress.student_id,
         "confirmed_seconds": progress.confirmed_seconds,
@@ -73,6 +81,19 @@ def _student_to_dict(progress: StudentProgress, tz_name: str) -> dict[str, Any]:
             }
             for a in progress.adjustments
         ],
+        "held_adjustments": [
+            {
+                "event_id": a.event_id,
+                "seconds": a.seconds,
+                "reason": a.reason,
+                "case_id": case_map.get(a.event_id),
+            }
+            for a in progress.held_adjustments
+        ],
+        "open_cases": cases,
+        "pending_review_seconds": sum(
+            int(case.get("disputed_seconds", 0)) for case in cases
+        ),
     }
 
 
@@ -85,6 +106,9 @@ def build_snapshot(
     freeze_id: str | None = None,
     event_cutoff_id: str | None = None,
     generated_at: datetime | None = None,
+    held_adjustment_event_ids: frozenset[str] | None = None,
+    open_cases_by_student: dict[str, list[dict[str, Any]]] | None = None,
+    held_case_map: dict[str, str] | None = None,
 ) -> Snapshot:
     """执行确定性的业务处理。"""
     state: ReplayState = replay(
@@ -93,13 +117,20 @@ def build_snapshot(
         timezone_name=timezone_name,
         required_seconds=required_seconds,
         up_to_event_id=event_cutoff_id,
+        held_adjustment_event_ids=held_adjustment_event_ids,
     )
     if generated_at is None:
         generated_at = datetime.now(timezone.utc)
     generated_at = generated_at.astimezone(timezone.utc)
 
+    cases_by_student = open_cases_by_student or {}
     students = [
-        _student_to_dict(state.students[sid], timezone_name)
+        _student_to_dict(
+            state.students[sid],
+            timezone_name,
+            open_cases=cases_by_student.get(sid),
+            held_case_map=held_case_map,
+        )
         for sid in sorted(state.students)
     ]
 
@@ -166,6 +197,7 @@ def diff_snapshots(old: Snapshot, new: Snapshot) -> dict[str, Any]:
             "lesson_units",
             "pending_lesson_units",
             "meets_requirement",
+            "pending_review_seconds",
         )
         changed_fields = {}
         for field_name in fields:

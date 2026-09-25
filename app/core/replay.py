@@ -89,6 +89,7 @@ class StudentProgress:
     daily: list[DayTotal] = field(default_factory=list)
     checkins: list[CheckinRecord] = field(default_factory=list)
     adjustments: list[Adjustment] = field(default_factory=list)
+    held_adjustments: list[Adjustment] = field(default_factory=list)
 
 
 @dataclass
@@ -127,8 +128,10 @@ def replay(
     timezone_name: str,
     required_seconds: int,
     up_to_event_id: str | None = None,
+    held_adjustment_event_ids: frozenset[str] | None = None,
 ) -> ReplayState:
     """执行确定性的业务处理。"""
+    held_ids = held_adjustment_event_ids or frozenset()
     sorted_events = sorted(
         (e for e in events if e.plan_version == plan_version),
         key=lambda e: e.event_id,
@@ -139,6 +142,7 @@ def replay(
     checkins_by_student: dict[str, list[CheckinRecord]] = {}
     checkin_index: dict[str, CheckinRecord] = {}
     adjustments_by_student: dict[str, list[Adjustment]] = {}
+    held_by_student: dict[str, list[Adjustment]] = {}
 
     for event in sorted_events:
         if event.event_type == EventType.CHECKIN:
@@ -152,16 +156,23 @@ def replay(
                 target.status = CheckinStatus.CONFIRMED
         elif event.event_type == EventType.LEAVE_CORRECTION:
             seconds = int(event.payload.get("adjustment_seconds", 0))
-            adjustments_by_student.setdefault(event.student_id, []).append(
-                Adjustment(
-                    event_id=event.event_id,
-                    student_id=event.student_id,
-                    seconds=seconds,
-                    reason=str(event.payload.get("reason", "")),
-                )
+            adjustment = Adjustment(
+                event_id=event.event_id,
+                student_id=event.student_id,
+                seconds=seconds,
+                reason=str(event.payload.get("reason", "")),
             )
+            # 被复核案件吸收的修正事件挂起，不直接改变学员总学时。
+            if event.event_id in held_ids:
+                held_by_student.setdefault(event.student_id, []).append(adjustment)
+            else:
+                adjustments_by_student.setdefault(event.student_id, []).append(
+                    adjustment
+                )
 
-    all_students = set(checkins_by_student) | set(adjustments_by_student)
+    all_students = (
+        set(checkins_by_student) | set(adjustments_by_student) | set(held_by_student)
+    )
     students: dict[str, StudentProgress] = {}
     for student_id in all_students:
         records = checkins_by_student.get(student_id, [])
@@ -209,6 +220,9 @@ def replay(
             daily=daily,
             checkins=sorted(records, key=lambda r: r.start_utc),
             adjustments=sorted(adjustments, key=lambda a: a.event_id),
+            held_adjustments=sorted(
+                held_by_student.get(student_id, []), key=lambda a: a.event_id
+            ),
         )
 
     return ReplayState(

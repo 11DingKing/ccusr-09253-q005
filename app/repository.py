@@ -5,13 +5,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from .core.replay import Event as CoreEvent
 from .core.replay import EventType
-from .models import Event as EventModel
+from .models import AnomalyCase, Event as EventModel
 from .models import Freeze, Plan
 
 
@@ -85,6 +85,14 @@ def insert_events(
     return accepted, duplicates
 
 
+def get_event(db: Session, plan_version: str, event_id: str) -> EventModel | None:
+    stmt = select(EventModel).where(
+        EventModel.plan_version == plan_version,
+        EventModel.event_id == event_id,
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
 def load_events(db: Session, plan_version: str) -> list[CoreEvent]:
     stmt = select(EventModel).where(EventModel.plan_version == plan_version)
     rows = db.execute(stmt).scalars().all()
@@ -143,3 +151,86 @@ def insert_freeze(
     if inserted is not None:
         return db.get(Freeze, (plan_version, freeze_id))
     return None
+
+
+def insert_case(db: Session, *, values: dict[str, Any]) -> AnomalyCase | None:
+    """插入复核案件；命中主键或去重键约束时返回 None（幂等）。"""
+    stmt = sqlite_insert(AnomalyCase).values(**values)
+    stmt = stmt.on_conflict_do_nothing().returning(AnomalyCase.case_id)
+    inserted = db.execute(stmt).scalar_one_or_none()
+    db.commit()
+    if inserted is None:
+        return None
+    return get_case(db, values["plan_version"], values["case_id"])
+
+
+def get_case(db: Session, plan_version: str, case_id: str) -> AnomalyCase | None:
+    return db.get(AnomalyCase, (plan_version, case_id))
+
+
+def list_cases(
+    db: Session,
+    plan_version: str,
+    *,
+    state: str | None = None,
+    student_id: str | None = None,
+) -> list[AnomalyCase]:
+    stmt = select(AnomalyCase).where(AnomalyCase.plan_version == plan_version)
+    if state is not None:
+        stmt = stmt.where(AnomalyCase.state == state)
+    if student_id is not None:
+        stmt = stmt.where(AnomalyCase.student_id == student_id)
+    stmt = stmt.order_by(AnomalyCase.case_id)
+    return list(db.execute(stmt).scalars().all())
+
+
+def update_case_fields(
+    db: Session,
+    plan_version: str,
+    case_id: str,
+    *,
+    expected_version: int,
+    changes: dict[str, Any],
+) -> bool:
+    """基于乐观锁版本号的条件更新，返回是否命中。"""
+    stmt = (
+        update(AnomalyCase)
+        .where(AnomalyCase.plan_version == plan_version)
+        .where(AnomalyCase.case_id == case_id)
+        .where(AnomalyCase.version == expected_version)
+        .values(
+            **changes,
+            version=expected_version + 1,
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    result = db.execute(stmt)
+    db.commit()
+    return result.rowcount == 1
+
+
+def conditional_transition(
+    db: Session,
+    plan_version: str,
+    case_id: str,
+    *,
+    from_states: list[str],
+    values: dict[str, Any],
+) -> AnomalyCase | None:
+    """仅当案件处于指定来源状态时才执行变更（并发认领只会有一个获胜者）。"""
+    stmt = (
+        update(AnomalyCase)
+        .where(AnomalyCase.plan_version == plan_version)
+        .where(AnomalyCase.case_id == case_id)
+        .where(AnomalyCase.state.in_(list(from_states)))
+        .values(
+            **values,
+            version=AnomalyCase.version + 1,
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    result = db.execute(stmt)
+    db.commit()
+    if result.rowcount != 1:
+        return None
+    return get_case(db, plan_version, case_id)

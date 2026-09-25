@@ -69,3 +69,39 @@ class Freeze(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
+
+
+class AnomalyCase(Base):
+    """异常学时复核案件：触发规则、证据、处理人与最终修正事件的关联载体。"""
+
+    __tablename__ = "anomaly_cases"
+
+    plan_version: Mapped[str] = mapped_column(String(128), primary_key=True)
+    case_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    student_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    rule: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    dedup_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    assignee_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    disputed_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source_event_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    absorbed_event_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    resolution_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    evidence: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    audit: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    lineage: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint("plan_version", "dedup_key", name="uq_anomaly_cases_plan_dedup"),
+        Index("ix_anomaly_cases_plan_student", "plan_version", "student_id"),
+        CheckConstraint("disputed_seconds >= 0", name="ck_anomaly_cases_disputed_nonneg"),
+        CheckConstraint("version >= 1", name="ck_anomaly_cases_version_positive"),
+    )
