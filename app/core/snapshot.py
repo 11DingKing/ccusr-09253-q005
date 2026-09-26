@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from .replay import (
     CheckinRecord,
@@ -25,6 +25,7 @@ class Snapshot:
     generated_at: str
     event_cutoff_id: str | None
     students: list[dict[str, Any]]
+    pending_cases: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -35,6 +36,7 @@ class Snapshot:
             "generated_at": self.generated_at,
             "event_cutoff_id": self.event_cutoff_id,
             "students": self.students,
+            "pending_cases": self.pending_cases,
         }
 
     @classmethod
@@ -47,6 +49,7 @@ class Snapshot:
             generated_at=data["generated_at"],
             event_cutoff_id=data.get("event_cutoff_id"),
             students=list(data.get("students", [])),
+            pending_cases=list(data.get("pending_cases") or []),
         )
 
 
@@ -70,6 +73,7 @@ def _student_to_dict(progress: StudentProgress, tz_name: str) -> dict[str, Any]:
                 "event_id": a.event_id,
                 "seconds": a.seconds,
                 "reason": a.reason,
+                "case_id": a.case_id,
             }
             for a in progress.adjustments
         ],
@@ -85,8 +89,13 @@ def build_snapshot(
     freeze_id: str | None = None,
     event_cutoff_id: str | None = None,
     generated_at: datetime | None = None,
+    pending_cases: Mapping[str, Sequence[dict[str, Any]]] | None = None,
 ) -> Snapshot:
-    """执行确定性的业务处理。"""
+    """执行确定性的业务处理。
+
+    pending_cases 按学员分组给出未决复核案件标注；这些案件只被清晰标注，
+    不计入已确认学时（其修正事件尚未生成）。
+    """
     state: ReplayState = replay(
         events,
         plan_version=plan_version,
@@ -98,10 +107,19 @@ def build_snapshot(
         generated_at = datetime.now(timezone.utc)
     generated_at = generated_at.astimezone(timezone.utc)
 
-    students = [
-        _student_to_dict(state.students[sid], timezone_name)
-        for sid in sorted(state.students)
+    annotations = pending_cases or {}
+    students = []
+    for sid in sorted(state.students):
+        student = _student_to_dict(state.students[sid], timezone_name)
+        student["pending_cases"] = [dict(a) for a in annotations.get(sid, [])]
+        students.append(student)
+
+    flat_pending = [
+        {"student_id": sid, **annotation}
+        for sid, student_annotations in annotations.items()
+        for annotation in student_annotations
     ]
+    flat_pending.sort(key=lambda a: a["case_id"])
 
     return Snapshot(
         plan_version=plan_version,
@@ -111,6 +129,7 @@ def build_snapshot(
         generated_at=generated_at.isoformat().replace("+00:00", "Z"),
         event_cutoff_id=event_cutoff_id,
         students=students,
+        pending_cases=flat_pending,
     )
 
 

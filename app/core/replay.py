@@ -21,6 +21,7 @@ class EventType(StrEnum):
     CHECKIN = "checkin"
     MENTOR_CONFIRM = "mentor_confirm"
     LEAVE_CORRECTION = "leave_correction"
+    CASE_CORRECTION = "case_correction"
 
 
 class CheckinStatus(StrEnum):
@@ -68,6 +69,7 @@ class Adjustment:
     student_id: str
     seconds: int
     reason: str
+    case_id: str | None = None
 
 
 @dataclass
@@ -150,7 +152,10 @@ def replay(
             target = checkin_index.get(target_id)
             if target is not None and target.student_id == event.student_id:
                 target.status = CheckinStatus.CONFIRMED
-        elif event.event_type == EventType.LEAVE_CORRECTION:
+        elif event.event_type in (
+            EventType.LEAVE_CORRECTION,
+            EventType.CASE_CORRECTION,
+        ):
             seconds = int(event.payload.get("adjustment_seconds", 0))
             adjustments_by_student.setdefault(event.student_id, []).append(
                 Adjustment(
@@ -158,6 +163,7 @@ def replay(
                     student_id=event.student_id,
                     seconds=seconds,
                     reason=str(event.payload.get("reason", "")),
+                    case_id=event.payload.get("case_id"),
                 )
             )
 

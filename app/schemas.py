@@ -51,7 +51,9 @@ class LeaveCorrectionPayload(BaseModel):
 
 class EventIn(BaseModel):
     event_id: str = Field(..., min_length=1, max_length=128)
-    event_type: Literal["checkin", "mentor_confirm", "leave_correction"]
+    event_type: Literal[
+        "checkin", "mentor_confirm", "leave_correction", "case_correction"
+    ]
     student_id: str = Field(..., min_length=1, max_length=128)
     payload: dict[str, Any]
 
@@ -98,6 +100,7 @@ class AdjustmentOut(BaseModel):
     event_id: str
     seconds: int
     reason: str
+    case_id: str | None = None
 
 
 class StudentProgressOut(BaseModel):
@@ -112,6 +115,7 @@ class StudentProgressOut(BaseModel):
     daily: list[DailyTotal]
     checkins: list[CheckinExplanation]
     adjustments: list[AdjustmentOut]
+    pending_cases: list[dict[str, Any]] = []
 
 
 class SnapshotOut(BaseModel):
@@ -122,6 +126,7 @@ class SnapshotOut(BaseModel):
     generated_at: str
     event_cutoff_id: str | None
     students: list[dict[str, Any]]
+    pending_cases: list[dict[str, Any]] = []
 
 
 class FreezeIn(BaseModel):
@@ -138,3 +143,72 @@ class DiffOut(BaseModel):
     new_event_cutoff_id: str | None
     student_changes: list[dict[str, Any]]
     students_affected: int
+
+
+class CaseDetectIn(BaseModel):
+    overlong_threshold_seconds: int | None = Field(None, gt=0)
+
+
+class CaseEvidenceIn(BaseModel):
+    note: str = Field(..., min_length=1, max_length=512)
+    attachments: list[str] = Field(default_factory=list, max_length=16)
+
+
+class CaseAdjudicateIn(BaseModel):
+    verdict: Literal["upheld", "rejected"]
+    reason: str = Field(..., min_length=1, max_length=512)
+    correction_seconds: int | None = None
+
+
+class CaseReasonIn(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=512)
+
+
+class CaseMergeIn(BaseModel):
+    target_case_id: str = Field(..., min_length=1, max_length=64)
+    reason: str = Field(..., min_length=1, max_length=512)
+
+
+class CaseSplitIn(BaseModel):
+    source_event_ids: list[str] = Field(..., min_length=1, max_length=64)
+    reason: str = Field(..., min_length=1, max_length=512)
+
+
+class CaseOut(BaseModel):
+    case_id: str
+    plan_version: str
+    student_id: str
+    rule: str
+    state: str
+    fingerprints: list[str]
+    source_event_ids: list[str]
+    lineage: list[str]
+    child_case_ids: list[str]
+    merged_into: str | None
+    assignee_id: str | None
+    suggested_correction_seconds: int
+    applied_correction_seconds: int
+    correction_event_ids: list[str]
+    resolution: str | None
+    resolution_reason: str | None
+    evidence: list[dict[str, Any]]
+    history: list[dict[str, Any]]
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class CaseDetectOut(BaseModel):
+    created: list[CaseOut]
+    existing: list[str]
+    total_anomalies: int
+
+
+class CaseMergeOut(BaseModel):
+    source: CaseOut
+    target: CaseOut
+
+
+class CaseSplitOut(BaseModel):
+    parent: CaseOut
+    child: CaseOut

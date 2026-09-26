@@ -69,3 +69,45 @@ class Freeze(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
+
+
+class ReviewCase(Base):
+    """异常学时复核案件：规则、证据、处理人、修正事件与血缘的持久化载体。"""
+
+    __tablename__ = "review_cases"
+
+    case_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    plan_version: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    student_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    rule: Mapped[str] = mapped_column(String(40), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    fingerprints: Mapped[list] = mapped_column(JSON, nullable=False)
+    source_event_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    lineage: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    child_case_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    merged_into: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    assignee_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    suggested_correction_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    applied_correction_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    adjudication_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    correction_event_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    resolution: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    resolution_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    evidence: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    history: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="ck_review_cases_version_pos"),
+        Index("ix_review_cases_plan_student", "plan_version", "student_id"),
+    )

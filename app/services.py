@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from .case_repository import open_cases_by_student
 from .core.snapshot import Snapshot, build_snapshot, diff_snapshots, explain_student
 from .repository import (
     get_freeze,
@@ -92,7 +93,32 @@ def current_snapshot(db: Session, plan_version: str) -> Snapshot:
         plan_version=plan_version,
         timezone_name=plan.iana_timezone,
         required_seconds=plan.required_seconds,
+        pending_cases=pending_case_annotations(db, plan_version),
     )
+
+
+def _pending_case_annotation(row: Any) -> dict[str, Any]:
+    """未决案件的快照标注：清晰标记但不计入已确认学时。"""
+    return {
+        "case_id": row.case_id,
+        "rule": row.rule,
+        "state": row.state,
+        "assignee_id": row.assignee_id,
+        "source_event_ids": list(row.source_event_ids),
+        "suggested_correction_seconds": row.suggested_correction_seconds,
+        "counts_toward_confirmed": False,
+    }
+
+
+def pending_case_annotations(
+    db: Session, plan_version: str
+) -> dict[str, list[dict[str, Any]]]:
+    """按学员分组的未决复核案件标注，供快照与冻结使用。"""
+    grouped = open_cases_by_student(db, plan_version)
+    return {
+        student_id: [_pending_case_annotation(row) for row in rows]
+        for student_id, rows in grouped.items()
+    }
 
 
 def student_progress(
@@ -120,6 +146,7 @@ def freeze_semester(
         required_seconds=plan.required_seconds,
         freeze_id=freeze_id,
         event_cutoff_id=cutoff,
+        pending_cases=pending_case_annotations(db, plan_version),
     )
     row = insert_freeze(
         db,
